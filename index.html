@@ -2,7 +2,7 @@
 <html lang="nl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Hockey Overspelen</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -13,10 +13,10 @@
     align-items: center;
     font-family: 'Arial Rounded MT Bold', Arial, sans-serif;
     min-height: 100vh;
-    padding: 14px;
+    padding: 6px 4px;
   }
-  h1 { color: #fff; font-size: 1.45rem; margin-bottom: 3px; text-shadow: 0 2px 8px #0009; }
-  .subtitle { color: #93c5fd; font-size: 0.82rem; margin-bottom: 10px; text-align: center; }
+  h1 { color: #fff; font-size: 1.15rem; margin-bottom: 2px; text-shadow: 0 2px 8px #0009; }
+  .subtitle { color: #93c5fd; font-size: 0.75rem; margin-bottom: 6px; text-align: center; }
   canvas { border-radius: 14px; box-shadow: 0 8px 32px #0009; cursor: grab; touch-action: none; display: block; }
   canvas:active { cursor: grabbing; }
   .tips {
@@ -47,9 +47,9 @@
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
-const W  = Math.min(window.innerWidth - 28, 720);
-const HF = Math.round(W * 0.60);   // field height
-const HB = 84;                      // bench height
+const W  = Math.min(window.innerWidth - 8, 960);
+const HF = Math.round(W * 0.62);   // field height
+const HB = 90;                      // bench height
 const H  = HF + HB;
 canvas.width = W; canvas.height = H;
 
@@ -246,7 +246,7 @@ function drawBench() {
 function benchPositions() {
   const bp = team.map((p,i)=>({p,i})).filter(({p})=>!p.onField);
   const startX = 60;
-  return bp.map(({p,i}, bi) => ({ player:p, teamIdx:i, x: startX + bi*80, y: HF + HB/2 }));
+  return bp.map(({p,i}, bi) => ({ player:p, teamIdx:i, x: startX + bi*95, y: HF + HB/2 }));
 }
 
 // ─── Draw: Player circle ─────────────────────────────────────────────────────
@@ -392,7 +392,7 @@ function draw() {
   // Defenders
   for (let i=0; i<defenders.length; i++) {
     const d = defenders[i];
-    drawPlayer(d.x, d.y, `V${i+1}`, '#dc2626', false, false, 19);
+    drawPlayer(d.x, d.y, `V${i+1}`, '#dc2626', false, false, 22);
     drawNameTag(d.x, d.y, `V${i+1}`, '#fca5a5', 19);
   }
 
@@ -401,8 +401,8 @@ function draw() {
     const p = team[i];
     if (!p.onField) continue;
     const color = p.keeper ? '#f97316' : '#0ea5e9';
-    drawPlayer(p.x, p.y, p.name, color, p.keeper, i===ballIdx);
-    drawNameTag(p.x, p.y, p.name, p.keeper ? '#fed7aa' : '#bae6fd');
+    drawPlayer(p.x, p.y, p.name, color, p.keeper, i===ballIdx, 24);
+    drawNameTag(p.x, p.y, p.name, p.keeper ? '#fed7aa' : '#bae6fd', 24);
   }
 
   // Bench players
@@ -411,10 +411,10 @@ function draw() {
     const isSelected = selectedBench === teamIdx;
     if (isSelected) {
       ctx.save(); ctx.strokeStyle='#fbbf24'; ctx.lineWidth=3.5; ctx.globalAlpha=0.9;
-      ctx.beginPath(); ctx.arc(x,y,27,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x,y,32,0,Math.PI*2); ctx.stroke();
       ctx.restore();
     }
-    drawPlayer(x, y, player.name, '#0ea5e9', false, false, 20);
+    drawPlayer(x, y, player.name, '#0ea5e9', false, false, 24);
     ctx.save();
     ctx.font='bold 10px Arial'; ctx.textAlign='center'; ctx.textBaseline='top';
     ctx.fillStyle = isSelected ? '#fbbf24' : 'rgba(255,255,255,0.45)';
@@ -445,15 +445,15 @@ function getPos(e) {
 
 function hitField(pos) {
   for (let i=0; i<defenders.length; i++)
-    if (dist(pos, defenders[i]) < 27) return { type:'defender', index:i };
+    if (dist(pos, defenders[i]) < 32) return { type:'defender', index:i };
   for (let i=0; i<team.length; i++)
-    if (team[i].onField && dist(pos, team[i]) < 27) return { type:'team', index:i };
+    if (team[i].onField && dist(pos, team[i]) < 32) return { type:'team', index:i };
   return null;
 }
 
 function hitBench(pos) {
   for (const {teamIdx,x,y} of benchPositions())
-    if (dist(pos, {x,y}) < 28) return teamIdx;
+    if (dist(pos, {x,y}) < 34) return teamIdx;
   return null;
 }
 
