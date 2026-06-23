@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hockey Overspelen</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f172a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-family: 'Arial Rounded MT Bold', Arial, sans-serif;
+    min-height: 100vh;
+    padding: 6px 4px;
+  }
+  h1 { color: #fff; font-size: 1.15rem; margin-bottom: 2px; text-shadow: 0 2px 8px #0009; }
+  .subtitle { color: #93c5fd; font-size: 0.75rem; margin-bottom: 6px; text-align: center; }
+  canvas { border-radius: 14px; box-shadow: 0 8px 32px #0009; cursor: grab; touch-action: none; display: block; }
+  canvas:active { cursor: grabbing; }
+  .tips {
+    margin-top: 10px;
+    display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;
+  }
+  .tip {
+    background: rgba(255,255,255,0.07);
+    border-radius: 10px;
+    padding: 6px 12px;
+    color: #93c5fd;
+    font-size: 0.78rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>🏑 Hockey Overspelen</h1>
+<p class="subtitle">Sleep spelers, klik om de bal te geven, wissel via de bank</p>
+<canvas id="c"></canvas>
+<div class="tips">
+  <span class="tip">🖱️ Sleep spelers om te verplaatsen</span>
+  <span class="tip">🏑 Klik op een speler om de bal te geven</span>
+  <span class="tip">🔄 Klik bankspeler → veldspeler om te wisselen</span>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+const W  = Math.min(window.innerWidth - 8, 960);
+const HF = Math.round(W * 0.62);   // field height
+const HB = 90;                      // bench height
+const H  = HF + HB;
+canvas.width = W; canvas.height = H;
+
+// Field geometry
+const FX1 = 16, FX2 = W - 16;
+const FY1 = 10, FY2 = HF - 10;
+const FCX = W / 2, FCY = HF / 2;
+const FW  = FX2 - FX1, FH = FY2 - FY1;
+const GOAL_HALF  = FH * 0.105;
+const GOAL_DEPTH = 13;
+const D_R = FW * 0.170;
+
+// ─── Team ───────────────────────────────────────────────────────────────────
+const team = [
+  { name: 'Noé',      x: FX1+32,          y: FCY,             keeper: true,  onField: true  },
+  { name: 'Ella',     x: FCX-FW*0.24,     y: FY1+FH*0.17,     keeper: false, onField: true  },
+  { name: 'Ellenoor', x: FCX-FW*0.24,     y: FY2-FH*0.17,     keeper: false, onField: true  },
+  { name: 'Kate',     x: FCX-FW*0.12,     y: FCY,             keeper: false, onField: true  },
+  { name: 'Lauren',   x: FCX,             y: FY1+FH*0.13,     keeper: false, onField: true  },
+  { name: 'Emmy',     x: FCX,             y: FY2-FH*0.13,     keeper: false, onField: true  },
+  { name: 'Cecilia',  x: FCX+FW*0.11,     y: FCY-FH*0.18,     keeper: false, onField: true  },
+  { name: 'Tess',     x: FCX+FW*0.11,     y: FCY+FH*0.18,     keeper: false, onField: true  },
+  { name: 'Vera',     x: 0, y: 0,         keeper: false, onField: false },
+  { name: 'Milou',    x: 0, y: 0,         keeper: false, onField: false },
+];
+
+// ─── Defenders ──────────────────────────────────────────────────────────────
+const defenders = [
+  { x: FCX+FW*0.19, y: FY1+FH*0.20 },
+  { x: FCX+FW*0.19, y: FY2-FH*0.20 },
+  { x: FCX+FW*0.27, y: FCY-FH*0.33 },
+  { x: FCX+FW*0.27, y: FCY         },
+  { x: FCX+FW*0.27, y: FCY+FH*0.33 },
+  { x: FCX+FW*0.37, y: FY1+FH*0.13 },
+  { x: FCX+FW*0.37, y: FCY         },
+  { x: FCX+FW*0.37, y: FY2-FH*0.13 },
+];
+
+let ballIdx      = 6;   // Cecilia has the ball
+let dragging     = null; // { type: 'team'|'defender', index }
+let selectedBench = null; // teamIdx of selected bench player
+let dragMoved    = false;
+let dragStart    = null;
+
+// ─── Math ────────────────────────────────────────────────────────────────────
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+function ptSegDist(p, a, b) {
+  const dx = b.x-a.x, dy = b.y-a.y, l2 = dx*dx+dy*dy;
+  if (!l2) return dist(p, a);
+  const t = Math.max(0, Math.min(1, ((p.x-a.x)*dx+(p.y-a.y)*dy)/l2));
+  return Math.hypot(p.x-(a.x+t*dx), p.y-(a.y+t*dy));
+}
+
+function inBetween(p, a, b) {
+  const dx=b.x-a.x, dy=b.y-a.y, l2=dx*dx+dy*dy;
+  if (!l2) return false;
+  const t = ((p.x-a.x)*dx+(p.y-a.y)*dy)/l2;
+  return t > 0.08 && t < 0.92;
+}
+
+function calcPct(from, to) {
+  const d = dist(from, to);
+  if (d < 5) return 0;
+  let minD = Infinity, blocked = false;
+  for (const def of defenders) {
+    if (!inBetween(def, from, to)) continue;
+    blocked = true;
+    const dd = ptSegDist(def, from, to);
+    if (dd < minD) minD = dd;
+  }
+  if (!blocked) return 100;
+  const r0 = 15 + d*0.030, r1 = r0 + 55;
+  return Math.round(Math.max(0, Math.min(1, (minD-r0)/(r1-r0)))*100);
+}
+
+// ─── Colours ─────────────────────────────────────────────────────────────────
+function pctColor(p) { return p<30 ? '#ef4444' : p<60 ? '#f59e0b' : '#10b981'; }
+function pctEmoji(p) { return p===0?'🚫':p<30?'😬':p<60?'⚠️':p<85?'👍':'🎉'; }
+function pctText(p)  { return p===0?'Niet spelen!':p<30?'Gevaarlijk!':p<60?'Riskant':p<85?'Redelijk vrij':'Super vrij!'; }
+
+function lighten(hex) {
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  return `rgb(${Math.min(255,r+65)},${Math.min(255,g+65)},${Math.min(255,b+65)})`;
+}
+
+// ─── Draw: Hockey field ───────────────────────────────────────────────────────
+function drawField() {
+  // Grass
+  const grad = ctx.createLinearGradient(0,0,0,HF);
+  grad.addColorStop(0,'#166534'); grad.addColorStop(0.5,'#15803d'); grad.addColorStop(1,'#14532d');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.roundRect(0,0,W,HF,14); ctx.fill();
+
+  // Alternating grass stripes
+  ctx.save(); ctx.globalAlpha = 0.055; ctx.fillStyle = '#fff';
+  const stripeW = FW/16;
+  for (let i=0; i<16; i+=2) ctx.fillRect(FX1+i*stripeW, FY1, stripeW, FH);
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+  ctx.lineWidth = 2;
+
+  // Outer boundary
+  ctx.beginPath(); ctx.rect(FX1, FY1, FW, FH); ctx.stroke();
+
+  // Center line
+  ctx.beginPath(); ctx.moveTo(FCX,FY1); ctx.lineTo(FCX,FY2); ctx.stroke();
+
+  // Center dot
+  ctx.fillStyle='rgba(255,255,255,0.72)';
+  ctx.beginPath(); ctx.arc(FCX,FCY,4,0,Math.PI*2); ctx.fill();
+
+  // 23m lines (dashed)
+  const m23L = FX1 + FW*0.255;
+  const m23R = FX2 - FW*0.255;
+  ctx.save(); ctx.setLineDash([5,5]);
+  ctx.beginPath(); ctx.moveTo(m23L,FY1); ctx.lineTo(m23L,FY2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(m23R,FY1); ctx.lineTo(m23R,FY2); ctx.stroke();
+  ctx.restore();
+
+  // "23m" labels
+  ctx.save(); ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='10px Arial';
+  ctx.textAlign='center';
+  ctx.fillText('23m', m23L, FY1+10);
+  ctx.fillText('23m', m23R, FY1+10);
+  ctx.restore();
+
+  // Shooting circles (D)
+  ctx.strokeStyle = 'rgba(255,255,255,0.72)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(FX1, FCY, D_R, -Math.PI/2, Math.PI/2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(FX2, FCY, D_R, Math.PI/2, -Math.PI/2); ctx.stroke();
+
+  // D fill (very subtle)
+  ctx.save(); ctx.globalAlpha=0.04; ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(FX1,FCY,D_R,-Math.PI/2,Math.PI/2); ctx.lineTo(FX1,FCY+D_R); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(FX2,FCY,D_R,Math.PI/2,-Math.PI/2); ctx.lineTo(FX2,FCY-D_R); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // Goals
+  ctx.strokeStyle='rgba(255,255,255,0.92)'; ctx.lineWidth=3;
+  // Left goal
+  ctx.beginPath();
+  ctx.moveTo(FX1, FCY-GOAL_HALF);
+  ctx.lineTo(FX1-GOAL_DEPTH, FCY-GOAL_HALF);
+  ctx.lineTo(FX1-GOAL_DEPTH, FCY+GOAL_HALF);
+  ctx.lineTo(FX1, FCY+GOAL_HALF);
+  ctx.stroke();
+  // Right goal
+  ctx.beginPath();
+  ctx.moveTo(FX2, FCY-GOAL_HALF);
+  ctx.lineTo(FX2+GOAL_DEPTH, FCY-GOAL_HALF);
+  ctx.lineTo(FX2+GOAL_DEPTH, FCY+GOAL_HALF);
+  ctx.lineTo(FX2, FCY+GOAL_HALF);
+  ctx.stroke();
+
+  // Goal nets (subtle fill)
+  ctx.save(); ctx.globalAlpha=0.12; ctx.fillStyle='#fff';
+  ctx.fillRect(FX1-GOAL_DEPTH, FCY-GOAL_HALF, GOAL_DEPTH, GOAL_HALF*2);
+  ctx.fillRect(FX2, FCY-GOAL_HALF, GOAL_DEPTH, GOAL_HALF*2);
+  ctx.restore();
+}
+
+// ─── Draw: Bench area ────────────────────────────────────────────────────────
+function drawBench() {
+  // Background
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, HF, W, HB);
+
+  // Divider
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(0, HF, W, 2);
+
+  // "BANK" label
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = 'bold 11px Arial';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText('BANK', 14, HF + HB/2);
+  ctx.restore();
+
+  // Hint when bench player selected
+  if (selectedBench !== null) {
+    ctx.save();
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText('↑ Klik een veldspeler om te wisselen', W-14, HF + HB/2);
+    ctx.restore();
+  }
+}
+
+// Compute screen positions for bench players
+function benchPositions() {
+  const bp = team.map((p,i)=>({p,i})).filter(({p})=>!p.onField);
+  const startX = 60;
+  return bp.map(({p,i}, bi) => ({ player:p, teamIdx:i, x: startX + bi*95, y: HF + HB/2 }));
+}
+
+// ─── Draw: Player circle ─────────────────────────────────────────────────────
+function drawPlayer(x, y, name, color, isKeeper, hasBall, size=20, alpha=1) {
+  ctx.save(); ctx.globalAlpha = alpha;
+
+  // Shadow
+  ctx.save(); ctx.globalAlpha = alpha*0.2; ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.ellipse(x+2, y+size+3, size*0.55, 5.5, 0,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Circle body
+  ctx.beginPath(); ctx.arc(x, y, size, 0, Math.PI*2);
+  const g = ctx.createRadialGradient(x-size*0.3, y-size*0.35, 2, x, y, size);
+  g.addColorStop(0, lighten(color)); g.addColorStop(1, color);
+  ctx.fillStyle = g; ctx.fill();
+
+  // Border
+  ctx.strokeStyle = isKeeper ? '#fde68a' : 'rgba(255,255,255,0.72)';
+  ctx.lineWidth = isKeeper ? 3.5 : 2;
+  ctx.stroke();
+
+  // Ball
+  if (hasBall) {
+    ctx.beginPath(); ctx.arc(x+size*0.80, y+size*0.68, 7.5, 0, Math.PI*2);
+    ctx.fillStyle='#fff'; ctx.fill();
+    ctx.strokeStyle='#444'; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.strokeStyle='#bbb'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(x+size*0.80, y+size*0.68, 7.5, -0.4, 0.9); ctx.stroke();
+  }
+
+  // Name inside
+  const short = name.slice(0,6);
+  const fs = short.length > 4 ? Math.round(size*0.60) : Math.round(size*0.72);
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${fs}px Arial`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(short, x, y);
+  ctx.restore();
+}
+
+function drawNameTag(x, y, text, color, size=20) {
+  ctx.save();
+  ctx.font = 'bold 10px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillText(text, x+1, y+size+4);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y+size+3);
+  ctx.restore();
+}
+
+function drawPctBadge(x, y, pct, big=false) {
+  const color = pctColor(pct);
+  const by = y - (big ? 42 : 35);
+  const label = pct+'%';
+  const fs = big ? 14 : 11;
+  ctx.save();
+  ctx.font = `bold ${fs}px Arial`;
+  const tw = ctx.measureText(label).width + 14;
+  const bh2 = big ? 24 : 19;
+  ctx.fillStyle = 'rgba(0,0,0,0.68)';
+  ctx.beginPath(); ctx.roundRect(x-tw/2, by-bh2/2, tw, bh2, bh2/2); ctx.fill();
+  ctx.strokeStyle = color; ctx.lineWidth = big ? 2.5 : 1.5;
+  ctx.beginPath(); ctx.roundRect(x-tw/2, by-bh2/2, tw, bh2, bh2/2); ctx.stroke();
+  ctx.fillStyle = color; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label, x, by);
+  ctx.restore();
+}
+
+function drawArrow(from, to, color, alpha) {
+  const angle = Math.atan2(to.y-from.y, to.x-from.x);
+  const ax = from.x+(to.x-from.x)*0.67, ay = from.y+(to.y-from.y)*0.67;
+  ctx.save(); ctx.translate(ax,ay); ctx.rotate(angle);
+  ctx.fillStyle=color; ctx.globalAlpha=alpha;
+  ctx.beginPath(); ctx.moveTo(11,0); ctx.lineTo(-6,-6); ctx.lineTo(-6,6); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawBanner(name, pct) {
+  const color = pctColor(pct);
+  const cx=W/2, cy=42;
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.62)';
+  ctx.beginPath(); ctx.roundRect(cx-160,cy-27,320,54,27); ctx.fill();
+
+  const r=19;
+  ctx.lineWidth=6.5; ctx.strokeStyle='rgba(255,255,255,0.1)';
+  ctx.beginPath(); ctx.arc(cx-98,cy,r,0,Math.PI*2); ctx.stroke();
+  ctx.strokeStyle=color; ctx.lineCap='round';
+  ctx.beginPath(); ctx.arc(cx-98,cy,r,-Math.PI/2,-Math.PI/2+(pct/100)*Math.PI*2); ctx.stroke();
+
+  ctx.fillStyle=color; ctx.font='bold 14px Arial';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(pct+'%', cx-98, cy);
+
+  ctx.fillStyle='#fff'; ctx.font='bold 13px Arial';
+  ctx.fillText(`Beste: ${name}  ${pctEmoji(pct)} ${pctText(pct)}`, cx+30, cy);
+  ctx.restore();
+}
+
+// ─── Draw: Pass lines ─────────────────────────────────────────────────────────
+function drawPassLines() {
+  const bh = team[ballIdx];
+  if (!bh?.onField) return;
+
+  const targets = team.map((p,i)=>({p,i})).filter(({p,i})=>p.onField && i!==ballIdx);
+  if (!targets.length) return;
+
+  const pcts = targets.map(({p})=>calcPct(bh,p));
+  const bestPct = Math.max(...pcts);
+  const bestI   = pcts.indexOf(bestPct);
+
+  // Non-best lines first
+  targets.forEach(({p}, i) => {
+    if (i===bestI) return;
+    const color = pctColor(pcts[i]);
+    ctx.save(); ctx.setLineDash([6,9]); ctx.strokeStyle=color; ctx.lineWidth=1.8; ctx.globalAlpha=0.35;
+    ctx.beginPath(); ctx.moveTo(bh.x,bh.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+    ctx.restore();
+    drawArrow(bh, p, color, 0.4);
+    drawPctBadge(p.x, p.y, pcts[i]);
+  });
+
+  // Best line
+  const {p: best} = targets[bestI];
+  const color = pctColor(bestPct);
+  ctx.save(); ctx.setLineDash([13,6]); ctx.strokeStyle=color; ctx.lineWidth=3.5; ctx.globalAlpha=0.92;
+  ctx.beginPath(); ctx.moveTo(bh.x,bh.y); ctx.lineTo(best.x,best.y); ctx.stroke();
+  ctx.restore();
+  drawArrow(bh, best, color, 0.95);
+  drawPctBadge(best.x, best.y, bestPct, true);
+  drawBanner(best.name, bestPct);
+}
+
+// ─── Main draw ────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  drawField();
+  drawBench();
+  drawPassLines();
+
+  // Defenders
+  for (let i=0; i<defenders.length; i++) {
+    const d = defenders[i];
+    drawPlayer(d.x, d.y, `V${i+1}`, '#dc2626', false, false, 22);
+    drawNameTag(d.x, d.y, `V${i+1}`, '#fca5a5', 19);
+  }
+
+  // Field team players
+  for (let i=0; i<team.length; i++) {
+    const p = team[i];
+    if (!p.onField) continue;
+    const color = p.keeper ? '#f97316' : '#0ea5e9';
+    drawPlayer(p.x, p.y, p.name, color, p.keeper, i===ballIdx, 24);
+    drawNameTag(p.x, p.y, p.name, p.keeper ? '#fed7aa' : '#bae6fd', 24);
+  }
+
+  // Bench players
+  const bp = benchPositions();
+  for (const {player, teamIdx, x, y} of bp) {
+    const isSelected = selectedBench === teamIdx;
+    if (isSelected) {
+      ctx.save(); ctx.strokeStyle='#fbbf24'; ctx.lineWidth=3.5; ctx.globalAlpha=0.9;
+      ctx.beginPath(); ctx.arc(x,y,32,0,Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+    drawPlayer(x, y, player.name, '#0ea5e9', false, false, 24);
+    ctx.save();
+    ctx.font='bold 10px Arial'; ctx.textAlign='center'; ctx.textBaseline='top';
+    ctx.fillStyle = isSelected ? '#fbbf24' : 'rgba(255,255,255,0.45)';
+    ctx.fillText(player.name, x, y+24);
+    ctx.restore();
+  }
+
+  // Dashed highlight ring around field players when bench player selected
+  if (selectedBench !== null) {
+    for (let i=0; i<team.length; i++) {
+      const p = team[i];
+      if (!p.onField) continue;
+      ctx.save(); ctx.strokeStyle='#fbbf24'; ctx.lineWidth=2; ctx.globalAlpha=0.45;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.arc(p.x,p.y,27,0,Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+// ─── Interaction ─────────────────────────────────────────────────────────────
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const sx=W/rect.width, sy=H/rect.height;
+  const src = e.touches ? e.touches[0] : e;
+  return { x:(src.clientX-rect.left)*sx, y:(src.clientY-rect.top)*sy };
+}
+
+function hitField(pos) {
+  for (let i=0; i<defenders.length; i++)
+    if (dist(pos, defenders[i]) < 32) return { type:'defender', index:i };
+  for (let i=0; i<team.length; i++)
+    if (team[i].onField && dist(pos, team[i]) < 32) return { type:'team', index:i };
+  return null;
+}
+
+function hitBench(pos) {
+  for (const {teamIdx,x,y} of benchPositions())
+    if (dist(pos, {x,y}) < 34) return teamIdx;
+  return null;
+}
+
+function swapWithBench(benchIdx, fieldIdx) {
+  const bench = team[benchIdx], field = team[fieldIdx];
+  bench.x = field.x; bench.y = field.y; bench.onField = true;
+  field.onField = false;
+  if (ballIdx === fieldIdx) ballIdx = benchIdx;
+}
+
+canvas.addEventListener('mousedown', e => {
+  const pos = getPos(e);
+  dragStart = pos; dragMoved = false;
+
+  const bi = hitBench(pos);
+  if (bi !== null) {
+    selectedBench = (selectedBench === bi) ? null : bi;
+    draw(); return;
+  }
+
+  const hit = hitField(pos);
+  if (!hit) { selectedBench = null; draw(); return; }
+
+  if (selectedBench !== null && hit.type === 'team') {
+    swapWithBench(selectedBench, hit.index);
+    selectedBench = null; draw(); return;
+  }
+  dragging = hit;
+});
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const pos = getPos(e);
+  dragStart = pos; dragMoved = false;
+
+  const bi = hitBench(pos);
+  if (bi !== null) {
+    selectedBench = (selectedBench === bi) ? null : bi;
+    draw(); return;
+  }
+  const hit = hitField(pos);
+  if (!hit) { selectedBench = null; draw(); return; }
+  if (selectedBench !== null && hit.type === 'team') {
+    swapWithBench(selectedBench, hit.index);
+    selectedBench = null; draw(); return;
+  }
+  dragging = hit;
+}, { passive: false });
+
+function onMove(e) {
+  if (!dragging) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  if (dragStart && dist(pos, dragStart) > 5) dragMoved = true;
+  const obj = dragging.type === 'team' ? team[dragging.index] : defenders[dragging.index];
+  obj.x = Math.max(FX1+4, Math.min(FX2-4, pos.x));
+  obj.y = Math.max(FY1+4, Math.min(FY2-4, pos.y));
+  draw();
+}
+canvas.addEventListener('mousemove', e => {
+  onMove(e);
+  if (!dragging) canvas.style.cursor = (hitField(getPos(e)) || hitBench(getPos(e)) !== null) ? 'grab' : 'default';
+});
+canvas.addEventListener('touchmove', onMove, { passive:false });
+
+canvas.addEventListener('mouseup', () => {
+  if (!dragMoved && dragging?.type === 'team') {
+    ballIdx = dragging.index; draw();
+  }
+  dragging = null; dragStart = null;
+});
+canvas.addEventListener('touchend', () => {
+  if (!dragMoved && dragging?.type === 'team') {
+    ballIdx = dragging.index; draw();
+  }
+  dragging = null; dragStart = null;
+});
+
+draw();
+</script>
+</body>
+</html>
